@@ -2,70 +2,74 @@ package dev.slimevr.vr.trackers;
 
 import java.util.List;
 
+import dev.slimevr.vr.processor.ComputedHumanPoseTracker;
+
+
 public class TrackerUtils {
-	
+
 	private TrackerUtils() {
 	}
 
-	public static <T extends Tracker> T findTrackerForBodyPosition(T[] allTrackers, TrackerPosition position) {
-		if(position == null)
+	/**
+	 * Finds the first tracker from allTrackers matching the position
+	 * 
+	 * @return The tracker as a Tracker
+	 */
+	public static <T extends Tracker> T findTrackerForBodyPosition(
+		List<T> allTrackers,
+		TrackerPosition position
+	) {
+		if (position == null)
 			return null;
-		for(int i = 0; i < allTrackers.length; ++i) {
-			T t = allTrackers[i];
-			if(t != null && t.getBodyPosition() == position)
+		for (T t : allTrackers) {
+			if (t != null && t.getBodyPosition() == position)
 				return t;
 		}
 		return null;
 	}
 
-	public static <T extends Tracker> T findTrackerForBodyPosition(List<T> allTrackers, TrackerPosition position) {
-		if(position == null)
+	/**
+	 * Finds the first non ComputedHumanPoseTracker tracker from allTrackers
+	 * matching the position
+	 * 
+	 * @return The non ComputedHumanPoseTracker as a Tracker
+	 */
+	public static <T extends Tracker> T findNonComputedHumanPoseTrackerForBodyPosition(
+		List<T> allTrackers,
+		TrackerPosition position
+	) {
+		if (position == null)
 			return null;
-		for(int i = 0; i < allTrackers.size(); ++i) {
-			T t = allTrackers.get(i);
-			if(t != null && t.getBodyPosition() == position)
+		for (T t : allTrackers) {
+			if (
+				t != null
+					&& t.getBodyPosition() == position
+					&& !(t instanceof ComputedHumanPoseTracker)
+			)
 				return t;
 		}
 		return null;
 	}
 
-	public static <T extends Tracker> T findTrackerForBodyPosition(List<T> allTrackers, TrackerPosition position, TrackerPosition altPosition) {
-		T t = findTrackerForBodyPosition(allTrackers, position);
-		if(t != null)
-			return t;
-		return findTrackerForBodyPosition(allTrackers, altPosition);
-	}
+	/**
+	 * Returns the first tracker that isn't null out of the 3 trackers maximum
+	 * passed as arguments.
+	 * 
+	 * 
+	 * @return The first non null tracker.
+	 */
+	public static <T extends Tracker> T getFirstAvailableTracker(
+		T firstTracker,
+		T secondTracker,
+		T thirdTracker
+	) {
+		if (firstTracker != null)
+			return firstTracker;
+		if (secondTracker != null)
+			return secondTracker;
+		if (thirdTracker != null)
+			return thirdTracker;
 
-	public static <T extends Tracker> T findTrackerForBodyPosition(T[] allTrackers, TrackerPosition position, TrackerPosition altPosition, TrackerPosition secondAltPosition) {
-		T t = findTrackerForBodyPosition(allTrackers, position);
-		if(t != null)
-			return t;
-		t = findTrackerForBodyPosition(allTrackers, altPosition);
-		if(t != null)
-			return t;
-		return findTrackerForBodyPosition(allTrackers, secondAltPosition);
-	}
-
-	public static Tracker findTrackerForBodyPositionOrEmpty(List<? extends Tracker> allTrackers, TrackerPosition position, TrackerPosition altPosition, TrackerPosition secondAltPosition) {
-		Tracker t = findTrackerForBodyPosition(allTrackers, position);
-		if(t != null)
-			return t;
-		t = findTrackerForBodyPosition(allTrackers, altPosition);
-		if(t != null)
-			return t;
-		t = findTrackerForBodyPosition(allTrackers, secondAltPosition);
-		if(t != null)
-			return t;
-		return new ComputedTracker(Tracker.getNextLocalTrackerId(), "Empty tracker", false, false);
-	}
-
-	public static Tracker findTrackerForBodyPositionOrEmpty(Tracker[] allTrackers, TrackerPosition position, TrackerPosition altPosition) {
-		Tracker t = findTrackerForBodyPosition(allTrackers, position);
-		if(t != null)
-			return t;
-		t = findTrackerForBodyPosition(allTrackers, altPosition);
-		if(t != null)
-			return t;
-		return new ComputedTracker(Tracker.getNextLocalTrackerId(), "Empty tracker", false, false);
+		return null;
 	}
 }

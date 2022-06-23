@@ -1,33 +1,17 @@
 package dev.slimevr;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.function.Consumer;
-
 import dev.slimevr.bridge.Bridge;
-import dev.slimevr.platform.windows.WindowsNamedPipeBridge;
-import dev.slimevr.platform.windows.WindowsSteamVRPipeInputBridge;
 import dev.slimevr.bridge.VMCBridge;
-import dev.slimevr.bridge.WebSocketVRBridge;
+import dev.slimevr.platform.windows.WindowsNamedPipeBridge;
+import dev.slimevr.poserecorder.BVHRecorder;
+import dev.slimevr.protocol.ProtocolAPI;
+import dev.slimevr.serial.SerialHandler;
 import dev.slimevr.util.ann.VRServerThread;
 import dev.slimevr.vr.processor.HumanPoseProcessor;
-import dev.slimevr.vr.processor.skeleton.HumanSkeleton;
-import dev.slimevr.vr.trackers.HMDTracker;
-import dev.slimevr.vr.trackers.ShareableTracker;
-import dev.slimevr.vr.trackers.Tracker;
-import dev.slimevr.vr.trackers.TrackerConfig;
+import dev.slimevr.vr.processor.skeleton.Skeleton;
+import dev.slimevr.vr.trackers.*;
 import dev.slimevr.vr.trackers.udp.TrackersUDPServer;
+import dev.slimevr.websocketapi.WebSocketVRBridge;
 import io.eiren.util.OperatingSystem;
 import io.eiren.util.ann.ThreadSafe;
 import io.eiren.util.ann.ThreadSecure;
@@ -35,129 +19,170 @@ import io.eiren.util.collections.FastList;
 import io.eiren.yaml.YamlException;
 import io.eiren.yaml.YamlFile;
 import io.eiren.yaml.YamlNode;
+import solarxr_protocol.datatypes.TrackerIdT;
+
+import java.io.*;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.*;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.function.Consumer;
+import dev.slimevr.autobone.AutoBoneHandler;
+
 
 public class VRServer extends Thread {
-	
-	private final List<Tracker> trackers = new FastList<>();
+
 	public final HumanPoseProcessor humanPoseProcessor;
+	public final YamlFile config = new YamlFile();
+	public final HMDTracker hmdTracker;
+	private final List<Tracker> trackers = new FastList<>();
 	private final TrackersUDPServer trackersServer;
 	private final List<Bridge> bridges = new FastList<>();
 	private final Queue<Runnable> tasks = new LinkedBlockingQueue<>();
 	private final Map<String, TrackerConfig> configuration = new HashMap<>();
-	public final YamlFile config = new YamlFile();
-	public final HMDTracker hmdTracker;
 	private final List<Consumer<Tracker>> newTrackersConsumers = new FastList<>();
 	private final List<Runnable> onTick = new FastList<>();
 	private final List<? extends ShareableTracker> shareTrackers;
-	
+	private final BVHRecorder bvhRecorder;
+	private final SerialHandler serialHandler;
+	private final AutoBoneHandler autoBoneHandler;
+	private final ProtocolAPI protocolAPI;
+	private final String configPath;
+
 	public VRServer() {
+		this("vrconfig.yml");
+	}
+
+	public VRServer(String configPath) {
 		super("VRServer");
+		this.configPath = configPath;
 		loadConfig();
+
+		serialHandler = new SerialHandler();
+		autoBoneHandler = new AutoBoneHandler(this);
+		protocolAPI = new ProtocolAPI(this);
+
 		hmdTracker = new HMDTracker("HMD");
-		hmdTracker.position.set(0, 1.8f, 0); // Set starting position for easier debugging
+		hmdTracker.position.set(0, 1.8f, 0); // Set starting position for easier
+												// debugging
 		// TODO Multiple processors
 		humanPoseProcessor = new HumanPoseProcessor(this, hmdTracker);
 		shareTrackers = humanPoseProcessor.getComputedTrackers();
-		
+
 		// Start server for SlimeVR trackers
 		trackersServer = new TrackersUDPServer(6969, "Sensors UDP server", this::registerTracker);
-		
+
 		// OpenVR bridge currently only supports Windows
-		if(OperatingSystem.getCurrentPlatform() == OperatingSystem.WINDOWS) {
-			
+		if (OperatingSystem.getCurrentPlatform() == OperatingSystem.WINDOWS) {
+
 			// Create named pipe bridge for SteamVR driver
-			WindowsNamedPipeBridge driverBridge = new WindowsNamedPipeBridge(hmdTracker, "steamvr", "SteamVR Driver Bridge", "\\\\.\\pipe\\SlimeVRDriver", shareTrackers);
+			WindowsNamedPipeBridge driverBridge = new WindowsNamedPipeBridge(
+				hmdTracker,
+				"steamvr",
+				"SteamVR Driver Bridge",
+				"\\\\.\\pipe\\SlimeVRDriver",
+				shareTrackers
+			);
 			tasks.add(() -> driverBridge.startBridge());
 			bridges.add(driverBridge);
-			
+
 			// Create named pipe bridge for SteamVR input
 			// TODO: how do we want to handle HMD input from the feeder app?
-			WindowsNamedPipeBridge feederBridge = new WindowsNamedPipeBridge(null, "steamvr_feeder", "SteamVR Feeder Bridge", "\\\\.\\pipe\\SlimeVRInput", new FastList<ShareableTracker>());
+			WindowsNamedPipeBridge feederBridge = new WindowsNamedPipeBridge(
+				null,
+				"steamvr_feeder",
+				"SteamVR Feeder Bridge",
+				"\\\\.\\pipe\\SlimeVRInput",
+				new FastList<ShareableTracker>()
+			);
 			tasks.add(() -> feederBridge.startBridge());
 			bridges.add(feederBridge);
-			
 		}
-		
+
 		// Create WebSocket server
 		WebSocketVRBridge wsBridge = new WebSocketVRBridge(hmdTracker, shareTrackers, this);
 		tasks.add(() -> wsBridge.startBridge());
 		bridges.add(wsBridge);
-		
+
 		// Create VMCBridge
 		try {
 			VMCBridge vmcBridge = new VMCBridge(39539, 39540, InetAddress.getLocalHost());
 			tasks.add(() -> vmcBridge.startBridge());
 			bridges.add(vmcBridge);
-		} catch(UnknownHostException e) {
+		} catch (UnknownHostException e) {
 			e.printStackTrace();
 		}
-		
-		
+
+		bvhRecorder = new BVHRecorder(this);
+
 		registerTracker(hmdTracker);
-		for(int i = 0; i < shareTrackers.size(); ++i)
-			registerTracker(shareTrackers.get(i));
+		for (Tracker tracker : shareTrackers) {
+			registerTracker(tracker);
+		}
 	}
-	
+
 	public boolean hasBridge(Class<? extends Bridge> bridgeClass) {
-		for(int i = 0; i < bridges.size(); ++i) {
-			if(bridgeClass.isAssignableFrom(bridges.get(i).getClass()))
+		for (Bridge bridge : bridges) {
+			if (bridgeClass.isAssignableFrom(bridge.getClass())) {
 				return true;
+			}
 		}
 		return false;
 	}
 
 	@ThreadSafe
 	public <E extends Bridge> E getVRBridge(Class<E> bridgeClass) {
-		for(int i = 0; i < bridges.size(); ++i) {
-			Bridge b = bridges.get(i);
-			if(bridgeClass.isAssignableFrom(b.getClass()))
-				return bridgeClass.cast(b);
+		for (Bridge bridge : bridges) {
+			if (bridgeClass.isAssignableFrom(bridge.getClass())) {
+				return bridgeClass.cast(bridge);
+			}
 		}
 		return null;
 	}
-	
+
 	@ThreadSafe
 	public TrackerConfig getTrackerConfig(Tracker tracker) {
-		synchronized(configuration) {
+		synchronized (configuration) {
 			TrackerConfig config = configuration.get(tracker.getName());
-			if(config == null) {
+			if (config == null) {
 				config = new TrackerConfig(tracker);
 				configuration.put(tracker.getName(), config);
 			}
 			return config;
 		}
 	}
-	
+
 	private void loadConfig() {
 		try {
-			config.load(new FileInputStream(new File("vrconfig.yml")));
-		} catch(FileNotFoundException e) {
+			config.load(new FileInputStream(new File(this.configPath)));
+		} catch (FileNotFoundException e) {
 			// Config file didn't exist, is not an error
-		} catch(YamlException e) {
+		} catch (YamlException e) {
 			e.printStackTrace();
 		}
 		List<YamlNode> trackersConfig = config.getNodeList("trackers", null);
-		for(int i = 0; i < trackersConfig.size(); ++i) {
-			TrackerConfig cfg = new TrackerConfig(trackersConfig.get(i));
-			synchronized(configuration) {
+		for (YamlNode node : trackersConfig) {
+			TrackerConfig cfg = new TrackerConfig(node);
+			synchronized (configuration) {
 				configuration.put(cfg.trackerName, cfg);
 			}
 		}
 	}
-	
+
 	public void addOnTick(Runnable runnable) {
 		this.onTick.add(runnable);
 	}
-	
+
 	@ThreadSafe
 	public void addNewTrackerConsumer(Consumer<Tracker> consumer) {
 		queueTask(() -> {
 			newTrackersConsumers.add(consumer);
-			for(int i = 0; i < trackers.size(); ++i)
-				consumer.accept(trackers.get(i));
+			for (Tracker tracker : trackers) {
+				consumer.accept(tracker);
+			}
 		});
 	}
-	
+
 	@ThreadSafe
 	public void trackerUpdated(Tracker tracker) {
 		queueTask(() -> {
@@ -169,7 +194,7 @@ public class VRServer extends Thread {
 	}
 
 	@ThreadSafe
-	public void addSkeletonUpdatedCallback(Consumer<HumanSkeleton> consumer) {
+	public void addSkeletonUpdatedCallback(Consumer<Skeleton> consumer) {
 		queueTask(() -> {
 			humanPoseProcessor.addSkeletonUpdatedCallback(consumer);
 		});
@@ -179,64 +204,65 @@ public class VRServer extends Thread {
 	public synchronized void saveConfig() {
 		List<YamlNode> nodes = config.getNodeList("trackers", null);
 		List<Map<String, Object>> trackersConfig = new FastList<>(nodes.size());
-		for(int i = 0; i < nodes.size(); ++i) {
-			trackersConfig.add(nodes.get(i).root);
+		for (YamlNode node : nodes) {
+			trackersConfig.add(node.root);
 		}
 		config.setProperty("trackers", trackersConfig);
-		synchronized(configuration) {
+		synchronized (configuration) {
 			Iterator<TrackerConfig> iterator = configuration.values().iterator();
-			while(iterator.hasNext()) {
+			while (iterator.hasNext()) {
 				TrackerConfig tc = iterator.next();
 				Map<String, Object> cfg = null;
-				for(int i = 0; i < trackersConfig.size(); ++i) {
-					Map<String, Object> c = trackersConfig.get(i);
-					if(tc.trackerName.equals(c.get("name"))) {
+				for (Map<String, Object> c : trackersConfig) {
+					if (tc.trackerName.equals(c.get("name"))) {
 						cfg = c;
 						break;
 					}
 				}
-				if(cfg == null) {
+				if (cfg == null) {
 					cfg = new HashMap<>();
 					trackersConfig.add(cfg);
 				}
 				tc.saveConfig(new YamlNode(cfg));
 			}
 		}
-		File cfgFile = new File("vrconfig.yml");
+		File cfgFile = new File(this.configPath);
 		try {
 			config.save(new FileOutputStream(cfgFile));
-		} catch(IOException e) {
+		} catch (IOException e) {
 			e.printStackTrace();
 		}
 	}
-	
+
 	@Override
 	@VRServerThread
 	public void run() {
 		trackersServer.start();
-		while(true) {
-			//final long start = System.currentTimeMillis();
+		while (true) {
+			// final long start = System.currentTimeMillis();
 			do {
 				Runnable task = tasks.poll();
-				if(task == null)
+				if (task == null)
 					break;
 				task.run();
-			} while(true);
-			for(int i = 0; i < onTick.size(); ++i) {
-				this.onTick.get(i).run();
+			} while (true);
+			for (Runnable task : onTick) {
+				task.run();
 			}
-			for(int i = 0; i < bridges.size(); ++i)
-				bridges.get(i).dataRead();
-			for(int i = 0; i < trackers.size(); ++i)
-				trackers.get(i).tick();
+			for (Bridge bridge : bridges) {
+				bridge.dataRead();
+			}
+			for (Tracker tracker : trackers) {
+				tracker.tick();
+			}
 			humanPoseProcessor.update();
-			for(int i = 0; i < bridges.size(); ++i)
-				bridges.get(i).dataWrite();
-			//final long time = System.currentTimeMillis() - start;
+			for (Bridge bridge : bridges) {
+				bridge.dataWrite();
+			}
+			// final long time = System.currentTimeMillis() - start;
 			try {
 				Thread.sleep(1); // 1000Hz
-			} catch(InterruptedException e) {
-			}
+			} catch (InterruptedException e) {}
 		}
 	}
 
@@ -244,12 +270,12 @@ public class VRServer extends Thread {
 	public void queueTask(Runnable r) {
 		tasks.add(r);
 	}
-	
+
 	@VRServerThread
 	private void trackerAdded(Tracker tracker) {
 		humanPoseProcessor.trackerAdded(tracker);
 	}
-	
+
 	@ThreadSecure
 	public void registerTracker(Tracker tracker) {
 		TrackerConfig config = getTrackerConfig(tracker);
@@ -257,28 +283,91 @@ public class VRServer extends Thread {
 		queueTask(() -> {
 			trackers.add(tracker);
 			trackerAdded(tracker);
-			for(int i = 0; i < newTrackersConsumers.size(); ++i)
-				newTrackersConsumers.get(i).accept(tracker);
+			for (Consumer<Tracker> tc : newTrackersConsumers) {
+				tc.accept(tracker);
+			}
 		});
 	}
-	
+
+	public void updateTrackersFilters(TrackerFilters filter, float amount, int ticks) {
+		config.setProperty("filters.type", filter.name());
+		config.setProperty("filters.amount", amount);
+		config.setProperty("filters.tickCount", ticks);
+		saveConfig();
+
+		IMUTracker imu;
+		for (Tracker t : this.getAllTrackers()) {
+			Tracker realTracker = t;
+			if (t instanceof ReferenceAdjustedTracker)
+				realTracker = ((ReferenceAdjustedTracker<? extends Tracker>) t).getTracker();
+			if (realTracker instanceof IMUTracker) {
+				imu = (IMUTracker) realTracker;
+				imu.setFilter(filter.name(), amount, ticks);
+			}
+		}
+	}
+
 	public void resetTrackers() {
 		queueTask(() -> {
 			humanPoseProcessor.resetTrackers();
 		});
 	}
-	
+
 	public void resetTrackersYaw() {
 		queueTask(() -> {
 			humanPoseProcessor.resetTrackersYaw();
 		});
 	}
-	
+
 	public int getTrackersCount() {
 		return trackers.size();
 	}
 
 	public List<Tracker> getAllTrackers() {
 		return new FastList<>(trackers);
+	}
+
+	public Tracker getTrackerById(TrackerIdT id) {
+		for (Tracker tracker : trackers) {
+			if (tracker.getTrackerNum() != id.getTrackerNum()) {
+				continue;
+			}
+
+			// Handle synthetic devices
+			if (id.getDeviceId() == null && tracker.getDevice() == null) {
+				return tracker;
+			}
+
+			if (
+				tracker.getDevice() != null
+					&& id.getDeviceId() != null
+					&& id.getDeviceId().getId() == tracker.getDevice().getId()
+			) {
+				// This is a physical tracker, and both device id and the
+				// tracker num match
+				return tracker;
+			}
+		}
+		return null;
+	}
+
+	public BVHRecorder getBvhRecorder() {
+		return this.bvhRecorder;
+	}
+
+	public SerialHandler getSerialHandler() {
+		return this.serialHandler;
+	}
+
+	public AutoBoneHandler getAutoBoneHandler() {
+		return this.autoBoneHandler;
+	}
+
+	public ProtocolAPI getProtocolAPI() {
+		return protocolAPI;
+	}
+
+	public TrackersUDPServer getTrackersServer() {
+		return trackersServer;
 	}
 }

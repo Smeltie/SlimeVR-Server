@@ -1,40 +1,42 @@
 package dev.slimevr.posestreamer;
 
+import dev.slimevr.vr.processor.skeleton.Skeleton;
+
 import java.io.IOException;
 
-import dev.slimevr.vr.processor.skeleton.HumanSkeleton;
 
 public class TickPoseStreamer extends PoseStreamer {
-	
+
 	protected long nextFrameTimeMs = -1L;
-	
-	public TickPoseStreamer(HumanSkeleton skeleton) {
+
+	public TickPoseStreamer(Skeleton skeleton) {
 		super(skeleton);
 	}
-	
+
 	public void doTick() {
 		PoseDataStream poseFileStream = this.poseFileStream;
-		if(poseFileStream == null) {
+		if (poseFileStream == null) {
 			return;
 		}
-		
-		HumanSkeleton skeleton = this.skeleton;
-		if(skeleton == null) {
+
+		Skeleton skeleton = this.skeleton;
+		if (skeleton == null) {
 			return;
 		}
-		
+
 		long curTime = System.currentTimeMillis();
-		if(curTime < nextFrameTimeMs) {
+		if (curTime < nextFrameTimeMs) {
 			return;
 		}
-		
+
 		nextFrameTimeMs += frameRecordingInterval;
-		
-		// To prevent duplicate frames, make sure the frame time is always in the future
-		if(nextFrameTimeMs <= curTime) {
+
+		// To prevent duplicate frames, make sure the frame time is always in
+		// the future
+		if (nextFrameTimeMs <= curTime) {
 			nextFrameTimeMs = curTime + frameRecordingInterval;
 		}
-		
+
 		captureFrame();
 	}
 

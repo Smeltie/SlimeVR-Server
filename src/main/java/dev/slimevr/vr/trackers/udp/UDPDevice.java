@@ -1,15 +1,18 @@
 package dev.slimevr.vr.trackers.udp;
 
+import dev.slimevr.NetworkProtocol;
+import dev.slimevr.vr.trackers.Device;
+import dev.slimevr.vr.trackers.IMUTracker;
+
 import java.net.InetAddress;
 import java.net.SocketAddress;
 import java.util.HashMap;
 import java.util.Map;
 
-import dev.slimevr.NetworkProtocol;
-import dev.slimevr.vr.trackers.IMUTracker;
 
-public class TrackerUDPConnection {
-	
+public class UDPDevice implements Device {
+
+	public final int id;
 	public Map<Integer, IMUTracker> sensors = new HashMap<>();
 	public SocketAddress address;
 	public InetAddress ipAddress;
@@ -24,21 +27,27 @@ public class TrackerUDPConnection {
 	public NetworkProtocol protocol = null;
 	public int firmwareBuild = 0;
 	public boolean timedOut = false;
-	
-	public TrackerUDPConnection(SocketAddress address, InetAddress ipAddress) {
+
+	public UDPDevice(SocketAddress address, InetAddress ipAddress) {
 		this.address = address;
 		this.ipAddress = ipAddress;
+		this.id = UDPDevice.nextLocalDeviceId.incrementAndGet();
 	}
-	
+
 	public boolean isNextPacket(long packetId) {
-		if(packetId != 0 && packetId <= lastPacketNumber)
+		if (packetId != 0 && packetId <= lastPacketNumber)
 			return false;
 		lastPacketNumber = packetId;
 		return true;
 	}
-	
+
 	@Override
 	public String toString() {
 		return "udp:/" + ipAddress;
+	}
+
+	@Override
+	public int getId() {
+		return id;
 	}
 }

@@ -1,8 +1,8 @@
 package dev.slimevr.gui.swing;
 
-import javax.swing.JLabel;
+import javax.swing.*;
+
 
 public class EJlabel extends JLabel {
-	
-	
+
 }
